@@ -3,15 +3,31 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>マップ半径計測ツール</title>
+    <title>マップに円</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         #map { height: calc(100vh - 220px); width: 100%; border-radius: 12px; z-index: 1; }
-        /* iPhoneでの画面揺れ防止 */
         body { touch-action: manipulation; overflow-x: hidden; }
         .drawing-active #map { cursor: crosshair; }
+
+        /* 描画モード中はページスクロールやジェスチャの干渉を減らす */
+        body.drawing-active { touch-action: none; overscroll-behavior: none; }
+        body.drawing-active #map { touch-action: none; }
+
+        /* ラベル（固定表示）のスタイル */
+        .radius-label {
+            background: rgba(255, 255, 255, 0.92);
+            border: 1px solid #2563eb;
+            border-radius: 6px;
+            padding: 2px 6px;
+            font-weight: 700;
+            color: #1e40af;
+            font-size: 12px;
+            white-space: nowrap;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
     </style>
 </head>
 <body class="bg-slate-50 font-sans text-slate-900">
@@ -19,39 +35,37 @@
 <div class="max-w-6xl mx-auto p-4 md:p-6">
     <header class="mb-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
-            <h1 class="text-2xl font-bold text-blue-700">Map Radius Tool</h1>
+            <h1 class="text-2xl font-bold text-blue-700">マップに円</h1>
             <p class="text-sm text-slate-500">任意の地点から同心円を描画・計測</p>
         </div>
-        
+
         <div class="flex flex-wrap gap-2">
             <input id="searchInput" type="text" placeholder="場所を検索" class="border p-2 rounded-lg w-full md:w-48 shadow-sm focus:ring-2 focus:ring-blue-400 outline-none">
-            <button onclick="searchLocation()" class="flex-1 md:flex-none bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition shadow-md">検索</button>
-            <button onclick="clearCircles()" class="flex-1 md:flex-none bg-red-500 hover:bg-red-600 text-white px-4 py-2 rounded-lg transition shadow-md">リセット</button>
+            <button onclick="searchLocation()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg transition shadow-md text-sm">検索</button>
+            <button onclick="undoLastCircle()" class="bg-amber-500 hover:bg-amber-600 text-white px-3 py-2 rounded-lg transition shadow-md text-sm">1つ戻す</button>
+            <button onclick="clearCircles()" class="bg-red-500 hover:bg-red-600 text-white px-3 py-2 rounded-lg transition shadow-md text-sm">リセット</button>
         </div>
     </header>
 
     <div class="grid grid-cols-1 lg:grid-cols-4 gap-4">
-        <!-- サイドバー設定 -->
         <div class="lg:col-span-1 space-y-4">
-            <!-- 描画モード切替（スマホ用重要機能） -->
             <div class="bg-white p-4 rounded-xl shadow-sm border-2 border-blue-100">
                 <h2 class="font-semibold mb-2 flex items-center gap-2">
                     <span class="w-3 h-3 bg-blue-500 rounded-full"></span>
-                    操作モード選択
+                    操作モード
                 </h2>
                 <div class="grid grid-cols-2 gap-2">
                     <button id="modeMove" onclick="setMode('move')" class="p-2 rounded-lg border-2 border-blue-500 bg-blue-50 text-blue-700 font-bold text-sm">
-                        ✋ 地図移動
+                        ✋ 移動
                     </button>
                     <button id="modeDraw" onclick="setMode('draw')" class="p-2 rounded-lg border-2 border-slate-200 bg-white text-slate-600 font-bold text-sm">
-                        ✏️ 円を描く
+                        ✏️ 描く
                     </button>
                 </div>
-                <p class="text-[10px] text-slate-400 mt-2">※「円を描く」モード中は地図の移動が制限されます</p>
             </div>
 
             <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-200">
-                <h2 class="font-semibold mb-3 border-b pb-2">距離指定で描く</h2>
+                <h2 class="font-semibold mb-3 border-b pb-2 text-sm">距離指定で描く</h2>
                 <div class="flex gap-2">
                     <input id="radiusInput" type="number" value="2" step="0.1" min="0.1" class="border p-2 rounded w-full">
                     <span class="flex items-center text-sm">km</span>
@@ -59,12 +73,11 @@
                 <button onclick="drawCircleFromCenter()" class="w-full mt-3 bg-slate-800 text-white p-2 rounded hover:bg-slate-700 transition text-sm">現在の中心に描画</button>
             </div>
 
-            <div id="statusInfo" class="hidden p-3 bg-blue-600 text-white rounded-lg shadow-lg text-center animate-pulse">
-                半径: <span id="liveDistance" class="font-bold text-xl">0</span> km
+            <div id="statusInfo" class="hidden p-3 bg-blue-600 text-white rounded-lg shadow-lg text-center">
+                描画中: <span id="liveDistance" class="font-bold text-xl">0</span> km
             </div>
         </div>
 
-        <!-- マップエリア -->
         <div class="lg:col-span-3 relative">
             <div id="map" class="shadow-inner border border-slate-200"></div>
         </div>
@@ -73,57 +86,132 @@
 
 <script>
     let map;
+
+    // circles は「円 + ラベル」をセットで保持
+    // { circle: L.Circle, label: L.Marker }
     let circles = [];
+
     let tempCircle = null;
+    let tempLabel = null;
+
     let isDrawing = false;
     let startLatLng = null;
-    let currentMode = 'move'; // 'move' or 'draw'
+    let currentMode = 'move';
 
     window.onload = function() {
         map = L.map('map', {
-            tap: false // iOSでのクリック遅延対策
+            tap: false,              // iOSの誤反応回避
+            inertia: true
         }).setView([35.6895, 139.6917], 13);
 
         L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
             attribution: '&copy; OpenStreetMap'
         }).addTo(map);
 
-        // --- イベント登録 (Mouse & Touch) ---
+        // マウス + タッチ両対応（タッチは latlng が来ないことがあるので自前算出）
         map.on('mousedown touchstart', handleStart);
         map.on('mousemove touchmove', handleMove);
-        map.on('mouseup touchend', handleEnd);
+        map.on('mouseup touchend touchcancel', handleEnd);
     };
 
     function setMode(mode) {
         currentMode = mode;
         const btnMove = document.getElementById('modeMove');
         const btnDraw = document.getElementById('modeDraw');
-        
+
         if (mode === 'draw') {
             btnDraw.className = "p-2 rounded-lg border-2 border-blue-500 bg-blue-50 text-blue-700 font-bold text-sm";
             btnMove.className = "p-2 rounded-lg border-2 border-slate-200 bg-white text-slate-600 font-bold text-sm";
+
             map.dragging.disable();
             if (map.touchZoom) map.touchZoom.disable();
+            if (map.doubleClickZoom) map.doubleClickZoom.disable();
+            if (map.scrollWheelZoom) map.scrollWheelZoom.disable();
+            if (map.boxZoom) map.boxZoom.disable();
+            if (map.keyboard) map.keyboard.disable();
+
             document.body.classList.add('drawing-active');
         } else {
             btnMove.className = "p-2 rounded-lg border-2 border-blue-500 bg-blue-50 text-blue-700 font-bold text-sm";
             btnDraw.className = "p-2 rounded-lg border-2 border-slate-200 bg-white text-slate-600 font-bold text-sm";
+
             map.dragging.enable();
             if (map.touchZoom) map.touchZoom.enable();
+            if (map.doubleClickZoom) map.doubleClickZoom.enable();
+            if (map.scrollWheelZoom) map.scrollWheelZoom.enable();
+            if (map.boxZoom) map.boxZoom.enable();
+            if (map.keyboard) map.keyboard.enable();
+
             document.body.classList.remove('drawing-active');
         }
     }
 
+    // Leaflet の touch イベントで latlng が無いことがあるので補完
+    function getLatLngFromEvent(e) {
+        if (e && e.latlng) return e.latlng;
+
+        const oe = e && e.originalEvent;
+        if (!oe) return null;
+
+        // touchmove/touchstart: touches[0]
+        if (oe.touches && oe.touches.length > 0) {
+            return map.mouseEventToLatLng(oe.touches[0]);
+        }
+        // touchend: changedTouches[0]
+        if (oe.changedTouches && oe.changedTouches.length > 0) {
+            return map.mouseEventToLatLng(oe.changedTouches[0]);
+        }
+        return null;
+    }
+
+    // 目的地計算（中心 + 距離(m) + 方位角(deg) → LatLng）
+    function destinationPoint(lat, lng, distanceMeters, bearingDeg) {
+        const R = 6371000; // Earth radius (m)
+        const brng = bearingDeg * Math.PI / 180;
+        const φ1 = lat * Math.PI / 180;
+        const λ1 = lng * Math.PI / 180;
+        const δ = distanceMeters / R;
+
+        const sinφ1 = Math.sin(φ1), cosφ1 = Math.cos(φ1);
+        const sinδ = Math.sin(δ), cosδ = Math.cos(δ);
+
+        const sinφ2 = sinφ1 * cosδ + cosφ1 * sinδ * Math.cos(brng);
+        const φ2 = Math.asin(sinφ2);
+
+        const y = Math.sin(brng) * sinδ * cosφ1;
+        const x = cosδ - sinφ1 * sinφ2;
+        const λ2 = λ1 + Math.atan2(y, x);
+
+        return L.latLng(φ2 * 180 / Math.PI, ((λ2 * 180 / Math.PI + 540) % 360) - 180);
+    }
+
+    // 円周上のどこか（右上 45°）にラベルを置く
+    function createRadiusLabel(centerLatLng, radiusMeters, text) {
+        const pos = destinationPoint(centerLatLng.lat, centerLatLng.lng, radiusMeters, 45);
+
+        const icon = L.divIcon({
+            className: '',
+            html: `<div class="radius-label">${text}</div>`,
+            iconSize: [1, 1],     // 自動サイズに近い扱い
+            iconAnchor: [0, 0]
+        });
+
+        // クリックを邪魔しない
+        return L.marker(pos, { icon, interactive: false, keyboard: false }).addTo(map);
+    }
+
     function handleStart(e) {
         if (currentMode !== 'draw') return;
-        
-        // タッチイベントから座標取得
-        const latlng = e.latlng;
+
+        const latlng = getLatLngFromEvent(e);
         if (!latlng) return;
+
+        // iPhoneでスクロールに取られるのを抑える
+        if (e.originalEvent && e.originalEvent.cancelable) e.originalEvent.preventDefault();
 
         isDrawing = true;
         startLatLng = latlng;
-        
+
         tempCircle = L.circle(startLatLng, {
             radius: 0,
             color: '#2563eb',
@@ -131,52 +219,53 @@
             fillOpacity: 0.2,
             weight: 2
         }).addTo(map);
-        
+
         document.getElementById('statusInfo').classList.remove('hidden');
     }
 
     function handleMove(e) {
         if (!isDrawing) return;
-        
-        // スクロール等のブラウザ規定動作を抑止
-        if (e.originalEvent && e.originalEvent.preventDefault) {
-            // e.originalEvent.preventDefault(); // Leaflet内では不要な場合が多いが念の為
-        }
 
-        const latlng = e.latlng;
+        const latlng = getLatLngFromEvent(e);
         if (!latlng) return;
+
+        if (e.originalEvent && e.originalEvent.cancelable) e.originalEvent.preventDefault();
 
         const distance = map.distance(startLatLng, latlng);
         tempCircle.setRadius(distance);
-        
-        const km = (distance / 1000).toFixed(2);
-        document.getElementById('liveDistance').innerText = km;
+        document.getElementById('liveDistance').innerText = (distance / 1000).toFixed(2);
     }
 
     function handleEnd(e) {
-        if (!isDrawing) return;
-        
+        if (!isDrawing || !tempCircle) return;
+
         const distance = tempCircle.getRadius();
+
         if (distance > 5) {
-            const km = (distance / 1000).toFixed(2);
-            tempCircle.bindPopup(`半径: ${km} km`).openPopup();
-            circles.push(tempCircle);
+            const kmText = `${(distance / 1000).toFixed(2)} km`;
+
+            // 既存の一時ラベルがあれば消す（念のため）
+            if (tempLabel) { map.removeLayer(tempLabel); tempLabel = null; }
+
+            // 円周上に固定ラベルを作る
+            const label = createRadiusLabel(tempCircle.getLatLng(), distance, kmText);
+
+            circles.push({ circle: tempCircle, label });
         } else {
             map.removeLayer(tempCircle);
         }
-        
+
         isDrawing = false;
         tempCircle = null;
+
         document.getElementById('statusInfo').classList.add('hidden');
-        
-        // 描画が終わったら自動で移動モードに戻すと親切（必要に応じて）
-        // setMode('move'); 
     }
 
-    // --- その他機能 ---
     function drawCircleFromCenter() {
         const center = map.getCenter();
-        const km = document.getElementById('radiusInput').value;
+        const km = parseFloat(document.getElementById('radiusInput').value || '0');
+        if (!isFinite(km) || km <= 0) return;
+
         const radiusInMeters = km * 1000;
 
         const circle = L.circle(center, {
@@ -186,9 +275,27 @@
             radius: radiusInMeters
         }).addTo(map);
 
-        circle.bindPopup(`半径: ${km} km`).openPopup();
-        circles.push(circle);
+        const label = createRadiusLabel(circle.getLatLng(), radiusInMeters, `${km} km`);
+
+        circles.push({ circle, label });
         map.fitBounds(circle.getBounds());
+    }
+
+    // 最新の円を1つ削除（円とラベル両方）
+    function undoLastCircle() {
+        if (circles.length > 0) {
+            const last = circles.pop();
+            if (last.label) map.removeLayer(last.label);
+            if (last.circle) map.removeLayer(last.circle);
+        }
+    }
+
+    function clearCircles() {
+        circles.forEach(obj => {
+            if (obj.label) map.removeLayer(obj.label);
+            if (obj.circle) map.removeLayer(obj.circle);
+        });
+        circles = [];
     }
 
     async function searchLocation() {
@@ -206,10 +313,9 @@
         } catch (e) { console.error(e); }
     }
 
-    function clearCircles() {
-        circles.forEach(c => map.removeLayer(c));
-        circles = [];
-    }
+    document.getElementById('searchInput').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') searchLocation();
+    });
 </script>
 
 </body>
